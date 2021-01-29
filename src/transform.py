@@ -1,19 +1,19 @@
-import os
-import sys
 import itertools
-import numpy as np
 import logging
-from skimage.measure import label
-from scipy import ndimage
-from scipy.signal import fftconvolve
+import os
+
+import numpy as np
 import rasterio
 from osgeo import gdal
+from scipy import ndimage
+from scipy.signal import fftconvolve
+from skimage.measure import label
+
 logger = logging.getLogger(__name__)
 # Hill shading is determine by a combination of the slope (steepness) and the
 # slope direction -> using http://people.csail.mit.edu/bkph/papers/Hill-Shading.pdf
 
 
-###############################################################################
 def set_working_directory(path_to_output_file):
     """
     Basically make a subdirectory where the output file is located with the
@@ -21,16 +21,13 @@ def set_working_directory(path_to_output_file):
     :param path_to_output_file: path to the output file
     :return:
     """
-    working_dir = os.path.dirname(path_to_output_file) + os.sep \
-                  + 'hillshade_working'
+    working_dir = os.path.dirname(path_to_output_file) + os.sep + "hillshade_working"
     if not os.path.exists(working_dir):
         os.makedirs(working_dir)
     return working_dir
 
 
-###############################################################################
-def set_temporary_uri(original_uri, working_dir, calculation,
-                      extra_suffix=None):
+def set_temporary_uri(original_uri, working_dir, calculation, extra_suffix=None):
     """
     Sets the temporary working uri for a specific task
     :param working_dir:
@@ -40,14 +37,12 @@ def set_temporary_uri(original_uri, working_dir, calculation,
     original_basename = os.path.basename(original_uri)
 
     if extra_suffix is None:
-        extra_suffix = ''
-    suffix = ('_' + '_'.join([calculation, extra_suffix])).rstrip('_')
-    temp_uri = working_dir + os.sep + \
-               suffix.join(os.path.splitext(original_basename))
+        extra_suffix = ""
+    suffix = ("_" + "_".join([calculation, extra_suffix])).rstrip("_")
+    temp_uri = working_dir + os.sep + suffix.join(os.path.splitext(original_basename))
     return temp_uri
 
 
-###############################################################################
 def get_neighbouring_pixels(x=0, y=0, xlim=(-1, 1), ylim=(-1, 1), radius=1):
     """
     Yields coordinates of pixels in square surrounding this one, exclude edges.
@@ -61,20 +56,19 @@ def get_neighbouring_pixels(x=0, y=0, xlim=(-1, 1), ylim=(-1, 1), radius=1):
         radius  - number of pixels above/below (x,y) that are returned
     """
     intradius = int(np.ceil(radius))
-    for dx, dy in (itertools.product((np.arange(-intradius, intradius+1)),
-                                     (np.arange(-intradius, intradius+1)))):
+    for dx, dy in itertools.product(
+        (np.arange(-intradius, intradius + 1)), (np.arange(-intradius, intradius + 1))
+    ):
         if (dx == 0) and (dy == 0):  # exclude the coordinate of pixel itself
             continue
         # if surrounding pixel is within array limits, return it :)
-        if (min(xlim) <= (x+dx) <= max(xlim)) & \
-                (min(ylim) <= (y+dy) <= max(ylim)):
-            yield tuple([int(x+dx), int(y+dy)])
+        if (min(xlim) <= (x + dx) <= max(xlim)) & (min(ylim) <= (y + dy) <= max(ylim)):
+            yield tuple([int(x + dx), int(y + dy)])
 
 
-###############################################################################
-def patch_raster_nodata_within_boundary(input_raster_uri,
-                                        output_raster_uri=None,
-                                        patch_resampling='nearest'):
+def patch_raster_nodata_within_boundary(
+    input_raster_uri, output_raster_uri=None, patch_resampling="nearest"
+):
     """
     TODO: Can skimage do this better? Hav not researched...
     Fill in nodata values of raster with some value calculated out of raster
@@ -88,68 +82,88 @@ def patch_raster_nodata_within_boundary(input_raster_uri,
     Returns:
         None
     """
-    with rasterio.open(input_raster_uri, 'r') as input_raster:
+    with rasterio.open(input_raster_uri, "r") as input_raster:
         input_data = input_raster.read(1)
         input_meta = input_raster.meta
-        input_meta.update(compress='lzw')
+        input_meta.update(compress="lzw")
 
-    good_data = np.where(input_data != input_meta['nodata'])
+    good_data = np.where(input_data != input_meta["nodata"])
 
-    if patch_resampling in ['min', 'max']:
+    if patch_resampling in ["min", "max"]:
 
-        if patch_resampling == 'min':
+        if patch_resampling == "min":
             patch_value = np.min(input_data[good_data])
-        elif patch_resampling == 'max':
+        elif patch_resampling == "max":
             patch_value = np.max(input_data[good_data])
 
-        filled = np.where(input_data != input_meta['nodata'],
-                          input_data, patch_value)
+        filled = np.where(input_data != input_meta["nodata"], input_data, patch_value)
 
-    elif patch_resampling == 'nearest':
+    elif patch_resampling == "nearest":
 
-        bad = np.where(input_data == input_meta['nodata'])
+        bad = np.where(input_data == input_meta["nodata"])
         if len(bad[0]) == 0:
-            logger.debug('No bad pixels to fix in %s' %
-                         os.path.basename(input_raster_uri))
+            logger.debug(
+                f"No bad pixels to fix in {os.path.basename(input_raster_uri)}"
+            )
             return None
         badval = list(zip(bad[0], bad[1]))
         xsize = input_data.shape[0]
         ysize = input_data.shape[1]
         filled = input_data.copy()
-        logging.debug('%d bad values to fix in %s' %
-                      (len(bad[0]), os.path.basename(input_raster_uri)))
+        logging.debug(
+            "%d bad values to fix in %s"
+            % (len(bad[0]), os.path.basename(input_raster_uri))
+        )
         # on first loop, all nodata values are candidates for in-filling
         # during first loop, this is reduced to those nodata pixels that
         # have a neighbouring pixel with valid data.
         # Each subsequent loop are then filled with the neighbours of those
         # pixels that have no values until there are none left.
         while len(badval) > 0:
-            logging.debug('...searching %d of %d values for error' %
-                          (len(badval), input_data.size))
+            logging.debug(
+                "...searching %d of %d values for error"
+                % (len(badval), input_data.size)
+            )
             tofix = []
             nextbadval = []
             for bidx in np.arange(len(badval)):
-                if filled[badval[bidx]] != input_meta['nodata']:
+                if filled[badval[bidx]] != input_meta["nodata"]:
                     continue
-                goodnbor = np.array([tuple(coord) for coord in
-                    get_neighbouring_pixels(x=badval[bidx][0], y=badval[bidx][1],
-                                            xlim=(0, xsize-1), ylim=(0, ysize-1),
-                                            radius=1)
-                    if filled[tuple(coord)] != input_meta['nodata']])
+                goodnbor = np.array(
+                    [
+                        tuple(coord)
+                        for coord in get_neighbouring_pixels(
+                            x=badval[bidx][0],
+                            y=badval[bidx][1],
+                            xlim=(0, xsize - 1),
+                            ylim=(0, ysize - 1),
+                            radius=1,
+                        )
+                        if filled[tuple(coord)] != input_meta["nodata"]
+                    ]
+                )
                 if len(goodnbor) > 0:
                     goodval = [filled[tuple(coord)] for coord in goodnbor]
                     goodval.sort()
-                    tofix.append([tuple(badval[bidx]), goodval[int(len(goodval)/2)]])
+                    tofix.append([tuple(badval[bidx]), goodval[int(len(goodval) / 2)]])
 
-                    poornbor = np.array([tuple(coord) for coord in
-                        get_neighbouring_pixels(x=badval[bidx][0], y=badval[bidx][1],
-                                                xlim=(0, xsize-1), ylim=(0, ysize-1),
-                                                radius=1)
-                        if filled[tuple(coord)] == input_meta['nodata']])
+                    poornbor = np.array(
+                        [
+                            tuple(coord)
+                            for coord in get_neighbouring_pixels(
+                                x=badval[bidx][0],
+                                y=badval[bidx][1],
+                                xlim=(0, xsize - 1),
+                                ylim=(0, ysize - 1),
+                                radius=1,
+                            )
+                            if filled[tuple(coord)] == input_meta["nodata"]
+                        ]
+                    )
                     for poorpx in poornbor:
                         nextbadval.append(tuple(poorpx))
 
-            logging.debug('... fixing %d values' % (len(tofix)))
+            logging.debug("... fixing %d values" % (len(tofix)))
             for fix in tofix:
                 filled[fix[0]] = fix[1]
             badval = list(set(nextbadval))
@@ -157,33 +171,32 @@ def patch_raster_nodata_within_boundary(input_raster_uri,
     if output_raster_uri is None:
         output_raster_uri = input_raster_uri
 
-    input_meta.update(dtype='float32')
-    with rasterio.open(output_raster_uri, 'w', **input_meta) as out_raster:
-        out_raster.write_band(1, filled.astype(input_meta['dtype']))
+    input_meta.update(dtype="float32")
+    with rasterio.open(output_raster_uri, "w", **input_meta) as out_raster:
+        out_raster.write_band(1, filled.astype(input_meta["dtype"]))
 
 
-###############################################################################
 def calculate_curvature_3by3(arr, xy_resolution=1):
     """
     This works as a bilinear interpolation of the second-order terms of
-    a 3x3 surface described by a fourth-order polynomial surface
-    (see http://help.arcgis.com/en/arcgisdesktop/10.0/help/index.html#//00q90000000t000000)
+    a 3x3 surface described by a fourth-order polynomial surface (see
+    http://help.arcgis.com/en/arcgisdesktop/10.0/help/index.html#//00q90000000t000000)
     akin to an osculating circle
     :param arr: 3x3 array of either slope steepness or aspect (in radians)
     :param xy_resolution: resolution of the raster in metres.
     :return:
     """
-    horizontal = ((arr[1,2] + arr[1,0])/2 - arr[1,1]) / (xy_resolution**2)
-    vertical = ((arr[2,1] + arr[0,1])/2 - arr[1,1]) / (xy_resolution**2)
+    horizontal = ((arr[1, 2] + arr[1, 0]) / 2 - arr[1, 1]) / (xy_resolution ** 2)
+    vertical = ((arr[2, 1] + arr[0, 1]) / 2 - arr[1, 1]) / (xy_resolution ** 2)
 
-    curvature = -2*(horizontal + vertical) * 100
+    curvature = -2 * (horizontal + vertical) * 100
 
     return curvature
 
 
-###############################################################################
-def calculate_basic_hillshade(aspect_deg_array, slope_deg_array,
-                              altitude_deg=45., azimuth_deg=315.):
+def calculate_basic_hillshade(
+    aspect_deg_array, slope_deg_array, altitude_deg=45.0, azimuth_deg=315.0
+):
     """
     Calculates a basic hillshade based on equation 2 of
     http://myweb.liu.edu/~pkennell/reprints/peer-reviewed/geomorph_08.pdf
@@ -195,104 +208,115 @@ def calculate_basic_hillshade(aspect_deg_array, slope_deg_array,
     """
 
     # 1) altitude in degrees -> zenith angle in radians
-    zenith_rad = (90. - altitude_deg) * np.pi/180.
+    zenith_rad = (90.0 - altitude_deg) * np.pi / 180.0
 
     # 2) azimuth in radians
-    azimuth_rad = ((360.0 - azimuth_deg + 90) % 360)  * np.pi/180.
+    azimuth_rad = ((360.0 - azimuth_deg + 90) % 360) * np.pi / 180.0
 
     # 3) aspect in radians
-    aspect_rad_array = aspect_deg_array * np.pi/180.
+    aspect_rad_array = aspect_deg_array * np.pi / 180.0
 
     # 4) slope in radians
-    slope_rad_array = slope_deg_array * np.pi/180.
+    slope_rad_array = slope_deg_array * np.pi / 180.0
 
-    hillshade = 255.0 * ((np.cos(zenith_rad) * np.cos(slope_rad_array)) +
-                         (np.sin(zenith_rad) * np.sin(slope_rad_array)
-                          * np.cos(azimuth_rad - aspect_rad_array)))
+    hillshade = 255.0 * (
+        (np.cos(zenith_rad) * np.cos(slope_rad_array))
+        + (
+            np.sin(zenith_rad)
+            * np.sin(slope_rad_array)
+            * np.cos(azimuth_rad - aspect_rad_array)
+        )
+    )
     return hillshade
 
 
-###############################################################################
-def get_slope_steepness_uri(input_dem_uri, working_dir, extra_suffix=''):
+def get_slope_steepness_uri(input_dem_uri, working_dir, extra_suffix=""):
 
-    temp_slope_uri = set_temporary_uri(input_dem_uri, working_dir, 'slopeangle',
-                                       extra_suffix=extra_suffix)
+    temp_slope_uri = set_temporary_uri(
+        input_dem_uri, working_dir, "slopeangle", extra_suffix=extra_suffix
+    )
     return temp_slope_uri
 
 
-###############################################################################
-def get_slope_steepness_deg(input_dem_uri, working_dir,
-                            overwrite_temp_files=False, extra_suffix=''):
+def get_slope_steepness_deg(
+    input_dem_uri, working_dir, overwrite_temp_files=False, extra_suffix=""
+):
 
     # Set up file naming conventions
-    temp_slope_uri = get_slope_steepness_uri(input_dem_uri, working_dir,
-                                       extra_suffix=extra_suffix)
+    temp_slope_uri = get_slope_steepness_uri(
+        input_dem_uri, working_dir, extra_suffix=extra_suffix
+    )
 
     # See if the data has already been saved to default temp sub-folder
     if not os.path.exists(temp_slope_uri) or overwrite_temp_files:
         logger.info("Creating slope raster")
-        gdal.DEMProcessing(temp_slope_uri, input_dem_uri, 'slope')
-    with rasterio.open(temp_slope_uri, 'r') as tempsl:
+        gdal.DEMProcessing(temp_slope_uri, input_dem_uri, "slope")
+    with rasterio.open(temp_slope_uri, "r") as tempsl:
         slope_angle = tempsl.read(1)
 
     return slope_angle
 
 
-###############################################################################
-def get_slope_aspect_uri(input_dem_uri, working_dir, extra_suffix=''):
+def get_slope_aspect_uri(input_dem_uri, working_dir, extra_suffix=""):
 
-    temp_aspect_uri = set_temporary_uri(input_dem_uri, working_dir, 'aspect',
-                                        extra_suffix=extra_suffix)
+    temp_aspect_uri = set_temporary_uri(
+        input_dem_uri, working_dir, "aspect", extra_suffix=extra_suffix
+    )
     return temp_aspect_uri
 
 
-###############################################################################
-def get_slope_aspect_deg(input_dem_uri, working_dir,
-                         overwrite_temp_files=False, extra_suffix=''):
+def get_slope_aspect_deg(
+    input_dem_uri, working_dir, overwrite_temp_files=False, extra_suffix=""
+):
 
     # Set up file naming conventions
-    temp_aspect_uri = get_slope_aspect_uri(input_dem_uri, working_dir,
-                                           extra_suffix=extra_suffix)
+    temp_aspect_uri = get_slope_aspect_uri(
+        input_dem_uri, working_dir, extra_suffix=extra_suffix
+    )
 
     # See if the data has already been saved to default temp sub-folder
     if not os.path.exists(temp_aspect_uri) or overwrite_temp_files:
         logger.info("Creating aspect raster")
-        gdal.DEMProcessing(temp_aspect_uri, input_dem_uri, 'aspect')
-    with rasterio.open(temp_aspect_uri, 'r') as tempas:
+        gdal.DEMProcessing(temp_aspect_uri, input_dem_uri, "aspect")
+    with rasterio.open(temp_aspect_uri, "r") as tempas:
         aspect = tempas.read(1)
 
     return aspect
 
 
-###############################################################################
-def get_basic_hillshade(output_hillshade_uri, input_dem_uri,
-                        altitude_deg=45., azimuth_deg=315.,
-                        overwrite_temp_files=True):
+def get_basic_hillshade(
+    output_hillshade_uri,
+    input_dem_uri,
+    altitude_deg=45.0,
+    azimuth_deg=315.0,
+    overwrite_temp_files=True,
+):
 
     # Set up file naming conventions
     working_dir = set_working_directory(output_hillshade_uri)
 
     # Get slope angle and aspect
-    aspect = get_slope_aspect_deg(input_dem_uri, working_dir,
-                                  overwrite_temp_files=overwrite_temp_files)
-    slope_angle = get_slope_steepness_deg(input_dem_uri, working_dir,
-                                          overwrite_temp_files=overwrite_temp_files)
+    aspect = get_slope_aspect_deg(
+        input_dem_uri, working_dir, overwrite_temp_files=overwrite_temp_files
+    )
+    slope_angle = get_slope_steepness_deg(
+        input_dem_uri, working_dir, overwrite_temp_files=overwrite_temp_files
+    )
 
     # Calculate hillshade
     logger.info("Creating basic hillshade raster")
-    hillshade = calculate_basic_hillshade(aspect, slope_angle,
-                                          altitude_deg=altitude_deg,
-                                          azimuth_deg=azimuth_deg)
+    hillshade = calculate_basic_hillshade(
+        aspect, slope_angle, altitude_deg=altitude_deg, azimuth_deg=azimuth_deg
+    )
 
-    with rasterio.open(input_dem_uri, 'r') as input_r:
+    with rasterio.open(input_dem_uri, "r") as input_r:
         inputmeta = input_r.meta
 
-    logger.info("Saving basic hillshade raster: %s" % output_hillshade_uri)
-    with rasterio.open(output_hillshade_uri, 'w', **inputmeta) as outraster:
-        outraster.write_band(1, hillshade.astype(inputmeta['dtype']))
+    logger.info(f"Saving basic hillshade raster: {output_hillshade_uri}")
+    with rasterio.open(output_hillshade_uri, "w", **inputmeta) as outraster:
+        outraster.write_band(1, hillshade.astype(inputmeta["dtype"]))
 
 
-###############################################################################
 def calculate_slope_curvature(slope_angle, xy_resolution=1):
     """
     SLOW: ABANDONED
@@ -305,88 +329,98 @@ def calculate_slope_curvature(slope_angle, xy_resolution=1):
     :return:
     """
     slope_curvature = slope_angle.copy()
-    slope_curvature[:] = 0.
+    slope_curvature[:] = 0.0
     extra_keywords = {"xy_resolution": xy_resolution}
 
-    ndimage.generic_filter(slope_angle, calculate_curvature_3by3, size=(3, 3),
-                           output=slope_curvature, mode='nearest',
-                           extra_keywords=extra_keywords)
+    ndimage.generic_filter(
+        slope_angle,
+        calculate_curvature_3by3,
+        size=(3, 3),
+        output=slope_curvature,
+        mode="nearest",
+        extra_keywords=extra_keywords,
+    )
 
     return slope_curvature
 
 
-###############################################################################
-def get_profile_curvature(input_dem_uri, working_dir,
-                          overwrite_temp_files=False):
+def get_profile_curvature(input_dem_uri, working_dir, overwrite_temp_files=False):
     """
     SLOW: ABANDONED
     """
 
     # Set up file naming conventions
-    temp_profcurve_uri = \
-        set_temporary_uri(input_dem_uri, working_dir, 'profilecurvature')
+    temp_profcurve_uri = set_temporary_uri(
+        input_dem_uri, working_dir, "profilecurvature"
+    )
 
-    with rasterio.open(input_dem_uri, 'r') as input_r:
+    with rasterio.open(input_dem_uri, "r") as input_r:
         inputmeta = input_r.meta
-    xy_resolution = abs(inputmeta['transform'][0])
+    xy_resolution = abs(inputmeta["transform"][0])
 
     # See if the data has already been saved to default temp sub-folder
     if not os.path.exists(temp_profcurve_uri):
         logger.info("Creating profile curvature raster")
-        slope_angle = get_slope_steepness_deg(input_dem_uri, working_dir,
-                                              overwrite_temp_files=overwrite_temp_files)
-        profile_curvature = \
-            calculate_slope_curvature(slope_angle, xy_resolution=xy_resolution)
+        slope_angle = get_slope_steepness_deg(
+            input_dem_uri, working_dir, overwrite_temp_files=overwrite_temp_files
+        )
+        profile_curvature = calculate_slope_curvature(
+            slope_angle, xy_resolution=xy_resolution
+        )
     else:
-        with rasterio.open(temp_profcurve_uri, 'r') as tempas:
+        with rasterio.open(temp_profcurve_uri, "r") as tempas:
             profile_curvature = tempas.read(1)
 
     if overwrite_temp_files or not os.path.exists(temp_profcurve_uri):
-        logger.info("Saving profile curvature raster: %s" % temp_profcurve_uri)
-        with rasterio.open(temp_profcurve_uri, 'w', **inputmeta) as handle:
+        logger.info(f"Saving profile curvature raster: {temp_profcurve_uri}")
+        with rasterio.open(temp_profcurve_uri, "w", **inputmeta) as handle:
             handle.write_band(1, profile_curvature)
 
     return profile_curvature
 
 
-###############################################################################
-def get_planform_curvature(input_dem_uri, working_dir,
-                           overwrite_temp_files=False):
+def get_planform_curvature(input_dem_uri, working_dir, overwrite_temp_files=False):
     """
     SLOW: ABANDONED
     """
 
     # Set up file naming conventions
-    temp_plancurve_uri = \
-        set_temporary_uri(input_dem_uri, working_dir, 'planformcurvature')
+    temp_plancurve_uri = set_temporary_uri(
+        input_dem_uri, working_dir, "planformcurvature"
+    )
 
-    with rasterio.open(input_dem_uri, 'r') as input_r:
+    with rasterio.open(input_dem_uri, "r") as input_r:
         inputmeta = input_r.meta
-    xy_resolution = abs(inputmeta['transform'][0])
+    xy_resolution = abs(inputmeta["transform"][0])
 
     # See if the data has already been saved to default temp sub-folder
     if not os.path.exists(temp_plancurve_uri):
         logger.info("Creating planform curvature raster")
-        slope_aspect = get_slope_aspect_deg(input_dem_uri, working_dir,
-                                            overwrite_temp_files=overwrite_temp_files)
-        planform_curvature = \
-            calculate_slope_curvature(slope_aspect, xy_resolution=xy_resolution)
+        slope_aspect = get_slope_aspect_deg(
+            input_dem_uri, working_dir, overwrite_temp_files=overwrite_temp_files
+        )
+        planform_curvature = calculate_slope_curvature(
+            slope_aspect, xy_resolution=xy_resolution
+        )
     else:
-        with rasterio.open(temp_plancurve_uri, 'r') as tempas:
+        with rasterio.open(temp_plancurve_uri, "r") as tempas:
             planform_curvature = tempas.read(1)
 
     if overwrite_temp_files or not os.path.exists(temp_plancurve_uri):
-        logger.info("Saving planform curvature raster: %s" % temp_plancurve_uri)
-        with rasterio.open(temp_plancurve_uri, 'w', **inputmeta) as handle:
+        logger.info(f"Saving planform curvature raster: {temp_plancurve_uri}")
+        with rasterio.open(temp_plancurve_uri, "w", **inputmeta) as handle:
             handle.write_band(1, planform_curvature)
 
     return planform_curvature
 
 
-###############################################################################
-def get_curvature_hillshade(output_curveshade_uri, input_dem_uri,
-                            altitude_deg=45., azimuth_deg=315.,
-                            overwrite_temp_files=False):
+def get_curvature_hillshade(
+    output_curveshade_uri,
+    input_dem_uri,
+    altitude_deg=45.0,
+    azimuth_deg=315.0,
+    overwrite_temp_files=False,
+):
     """
     WOULDN'T USE THIS -> scipy.ndimage is slow for large rasters. Based on
     http://myweb.liu.edu/~pkennell/reprints/peer-reviewed/geomorph_08.pdf
@@ -397,34 +431,37 @@ def get_curvature_hillshade(output_curveshade_uri, input_dem_uri,
     working_dir = set_working_directory(output_curveshade_uri)
 
     # Get slope angle and aspect
-    aspect = get_slope_aspect_deg(input_dem_uri, working_dir,
-                                  overwrite_temp_files=overwrite_temp_files)
-    slope_angle = get_slope_steepness_deg(input_dem_uri, working_dir,
-                                          overwrite_temp_files=overwrite_temp_files)
+    aspect = get_slope_aspect_deg(
+        input_dem_uri, working_dir, overwrite_temp_files=overwrite_temp_files
+    )
+    slope_angle = get_slope_steepness_deg(
+        input_dem_uri, working_dir, overwrite_temp_files=overwrite_temp_files
+    )
 
     # Calculate hillshade
-    hillshade = calculate_basic_hillshade(aspect, slope_angle,
-                                          altitude_deg=altitude_deg,
-                                          azimuth_deg=azimuth_deg)
+    hillshade = calculate_basic_hillshade(
+        aspect, slope_angle, altitude_deg=altitude_deg, azimuth_deg=azimuth_deg
+    )
     # Calculate curvature
-    planform_curv = get_planform_curvature(input_dem_uri, working_dir,
-                                           overwrite_temp_files=overwrite_temp_files)
-    profile_curv = get_profile_curvature(input_dem_uri, working_dir,
-                                          overwrite_temp_files=overwrite_temp_files)
+    planform_curv = get_planform_curvature(
+        input_dem_uri, working_dir, overwrite_temp_files=overwrite_temp_files
+    )
+    profile_curv = get_profile_curvature(
+        input_dem_uri, working_dir, overwrite_temp_files=overwrite_temp_files
+    )
 
     # rescale curvature to 0 - 255
-    renorm_planform = 255. * abs(planform_curv) / max(abs(planform_curv))
-    renorm_profile = 255. * abs(profile_curv) / max(abs(profile_curv))
+    renorm_planform = 255.0 * abs(planform_curv) / max(abs(planform_curv))
+    renorm_profile = 255.0 * abs(profile_curv) / max(abs(profile_curv))
 
-    hillshade_curv = 0.2*(renorm_planform + renorm_profile) + 0.6*hillshade
+    hillshade_curv = 0.2 * (renorm_planform + renorm_profile) + 0.6 * hillshade
 
-    with rasterio.open(input_dem_uri, 'r') as input_r:
+    with rasterio.open(input_dem_uri, "r") as input_r:
         inputmeta = input_r.meta
-    with rasterio.open(output_curveshade_uri, 'w', **inputmeta) as outraster:
+    with rasterio.open(output_curveshade_uri, "w", **inputmeta) as outraster:
         outraster.write_band(1, hillshade_curv)
 
 
-###############################################################################
 def gaussian_blur(input_raster, pixel_radius=10):
     """
     Gaussian blur using FFT convolution algorithm in
@@ -434,22 +471,20 @@ def gaussian_blur(input_raster, pixel_radius=10):
     :return:
     """
     # expand input_raster to fit edge of kernel
-    padded_array = np.pad(input_raster, pixel_radius, 'symmetric')
+    padded_array = np.pad(input_raster, pixel_radius, "symmetric")
 
     # build kernel
-    x, y = np.mgrid[-pixel_radius:pixel_radius + 1,
-                    -pixel_radius:pixel_radius + 1]
-    g = np.exp(-(x**2 / float(pixel_radius)
-                 + y**2 / float(pixel_radius)))
+    x, y = np.mgrid[-pixel_radius : pixel_radius + 1, -pixel_radius : pixel_radius + 1]
+    g = np.exp(-(x ** 2 / float(pixel_radius) + y ** 2 / float(pixel_radius)))
     g = (g / g.sum()).astype(input_raster.dtype)
 
     # do the Gaussian blur
-    return fftconvolve(padded_array, g, mode='valid')
+    return fftconvolve(padded_array, g, mode="valid")
 
 
-###############################################################################
-def get_gaussian_blur(input_dem_uri, working_dir, blur_radius,
-                      overwrite_temp_files=False):
+def get_gaussian_blur(
+    input_dem_uri, working_dir, blur_radius, overwrite_temp_files=False
+):
     """
     Wrapper function for gaussian_blur() saving data to a file in a regular
     format.
@@ -460,31 +495,35 @@ def get_gaussian_blur(input_dem_uri, working_dir, blur_radius,
     :return:
     """
     # Set up file naming conventions
-    temp_blurred_uri = \
-        set_temporary_uri(input_dem_uri, working_dir, 'blur',
-                          extra_suffix=str(blur_radius)+'px')
+    temp_blurred_uri = set_temporary_uri(
+        input_dem_uri, working_dir, "blur", extra_suffix=str(blur_radius) + "px"
+    )
 
     # See if the data has already been saved to default temp sub-folder
     if not os.path.exists(temp_blurred_uri) or overwrite_temp_files:
-        logger.info("Creating %d pixel blurred raster of %s" %
-                    (blur_radius, input_dem_uri))
-        with rasterio.open(input_dem_uri, 'r') as tempdem:
+        logger.info(
+            "Creating %d pixel blurred raster of %s" % (blur_radius, input_dem_uri)
+        )
+        with rasterio.open(input_dem_uri, "r") as tempdem:
             demmeta = tempdem.meta
             demdata = tempdem.read(1)
-        blurred_raster =gaussian_blur(demdata, pixel_radius=blur_radius)
-        with rasterio.open(temp_blurred_uri, 'w', **demmeta) as tempblur:
-            tempblur.write_band(1, blurred_raster.astype(demmeta['dtype']))
+        blurred_raster = gaussian_blur(demdata, pixel_radius=blur_radius)
+        with rasterio.open(temp_blurred_uri, "w", **demmeta) as tempblur:
+            tempblur.write_band(1, blurred_raster.astype(demmeta["dtype"]))
     else:
-        with rasterio.open(temp_blurred_uri, 'r') as tempblur:
+        with rasterio.open(temp_blurred_uri, "r") as tempblur:
             blurred_raster = tempblur.read(1)
 
     return blurred_raster
 
 
-###############################################################################
-def calculate_multiscale_hillshade(output_mshillshade_uri, downloaded_dem_uri,
-                                   altitude_deg=45., azimuth_deg=315.,
-                                   delete_temp_files=True):
+def calculate_multiscale_hillshade(
+    output_mshillshade_uri,
+    downloaded_dem_uri,
+    altitude_deg=45.0,
+    azimuth_deg=315.0,
+    delete_temp_files=True,
+):
     """
     Saw this youtube: https://youtu.be/pFDLFldNj9c on how to hack ambient
     occlusion on hillshades and it looks boss. However, I'm sticking to
@@ -506,11 +545,11 @@ def calculate_multiscale_hillshade(output_mshillshade_uri, downloaded_dem_uri,
     pixel_blur = [10, 20, 50]
 
     # fetch the downloaded data to
-    with rasterio.open(downloaded_dem_uri, 'r') as indem:
+    with rasterio.open(downloaded_dem_uri, "r") as indem:
         dl_data = indem.read(1)
         dl_meta = indem.meta
-    dl_goodmask = np.where(dl_data != dl_meta['nodata'])
-    dl_badmask = np.where(dl_data == dl_meta['nodata'])
+    dl_goodmask = np.where(dl_data != dl_meta["nodata"])
+    dl_badmask = np.where(dl_data == dl_meta["nodata"])
 
     # Set up file naming conventions
     working_dir = set_working_directory(output_mshillshade_uri)
@@ -525,12 +564,14 @@ def calculate_multiscale_hillshade(output_mshillshade_uri, downloaded_dem_uri,
     # patch the downloaded DEM (so nodata values don't corrupt blurred dems)
     working_dem_uri = working_dir + os.sep + os.path.basename(downloaded_dem_uri)
     if not os.path.exists(working_dem_uri):
-        patch_raster_nodata_within_boundary(downloaded_dem_uri,
-                                            output_raster_uri=working_dem_uri,
-                                            patch_resampling='nearest')
+        patch_raster_nodata_within_boundary(
+            downloaded_dem_uri,
+            output_raster_uri=working_dem_uri,
+            patch_resampling="nearest",
+        )
 
     # read in the patched (working dem)
-    with rasterio.open(working_dem_uri, 'r') as indem:
+    with rasterio.open(working_dem_uri, "r") as indem:
         working_dem = indem.read(1)
         working_meta = indem.meta
 
@@ -549,19 +590,23 @@ def calculate_multiscale_hillshade(output_mshillshade_uri, downloaded_dem_uri,
     steepness.append(this_steepness)
     steepness_uri[0] = get_slope_steepness_uri(working_dem_uri, working_dir)
     logger.info("Calculating hillshade")
-    hillshade.append(calculate_basic_hillshade(this_aspect, this_steepness,
-                                               altitude_deg=altitude_deg,
-                                               azimuth_deg=azimuth_deg))
+    hillshade.append(
+        calculate_basic_hillshade(
+            this_aspect,
+            this_steepness,
+            altitude_deg=altitude_deg,
+            azimuth_deg=azimuth_deg,
+        )
+    )
     # save0_hillshade = hillshade[0].copy()
 
     # Calculate hillshades for blurred DEMs
     for pxbl in pixel_blur:
-        extra_suffix = '_' + str(pixel_blur) + 'pxblur'
         logger.info("Applying %d pixel radius blur to DEM" % pxbl)
         base_dem.append(get_gaussian_blur(working_dem_uri, working_dir, pxbl))
-        blurred_dem_uri = \
-            set_temporary_uri(working_dem_uri, working_dir, 'blur',
-                              extra_suffix=str(pxbl) + 'px')
+        blurred_dem_uri = set_temporary_uri(
+            working_dem_uri, working_dir, "blur", extra_suffix=str(pxbl) + "px"
+        )
         logger.info("\tCalculating aspect with %d pixel radius blur" % pxbl)
         this_aspect = get_slope_aspect_deg(blurred_dem_uri, working_dir)
         logger.info("\tCalculating steepness with %d pixel radius blur" % pxbl)
@@ -569,9 +614,14 @@ def calculate_multiscale_hillshade(output_mshillshade_uri, downloaded_dem_uri,
         steepness.append(this_steepness)
         steepness_uri[pxbl] = get_slope_steepness_uri(blurred_dem_uri, working_dir)
         logger.info("\tCalculating hillshade with %d pixel radius blur" % pxbl)
-        hillshade.append(calculate_basic_hillshade(this_aspect, this_steepness,
-                                                   altitude_deg=altitude_deg,
-                                                   azimuth_deg=azimuth_deg))
+        hillshade.append(
+            calculate_basic_hillshade(
+                this_aspect,
+                this_steepness,
+                altitude_deg=altitude_deg,
+                azimuth_deg=azimuth_deg,
+            )
+        )
 
     # turn lists into numpy arrays
     base_dem = np.array(base_dem)
@@ -579,96 +629,126 @@ def calculate_multiscale_hillshade(output_mshillshade_uri, downloaded_dem_uri,
     hillshade = np.array(hillshade)
 
     # average the hillshades up, rescale, and then brighten them...
-    logger.info('Averaging multiple scale hillshade')
+    logger.info("Averaging multiple scale hillshade")
     hillshade_average = np.sum(hillshade, axis=0) / len(hillshade)
-    logger.info('Brightening multiple scale hillshade')
+    logger.info("Brightening multiple scale hillshade")
     ha_scale = np.max(hillshade_average) - np.min(hillshade_average)
-    hillshade_average = 255. * (hillshade_average - np.min(hillshade_average)) / ha_scale
-    multiscale_hillshade = 85. + \
-        (170. * hillshade_average / np.max(hillshade_average))
+    hillshade_average = (
+        255.0 * (hillshade_average - np.min(hillshade_average)) / ha_scale
+    )
+    multiscale_hillshade = 85.0 + (
+        170.0 * hillshade_average / np.max(hillshade_average)
+    )
     # save1_hillshade = multiscale_hillshade.copy()
 
     # take hi res hillshade and use the bright end to brighten up/ white out
     # highlighted areas
-    logger.info('Adding highlights to multiple scale hillshade')
+    logger.info("Adding highlights to multiple scale hillshade")
     mean_hillshade = np.mean(hillshade[0, :, :])
-    highlight = \
-        np.where(hillshade[0, :, :] > mean_hillshade,
-                 hillshade[0, :, :] - mean_hillshade + multiscale_hillshade,
-                 multiscale_hillshade)
-    multiscale_hillshade = \
-        255. * (highlight - np.min(highlight)) / (np.max(highlight) - np.min(highlight))
+    highlight = np.where(
+        hillshade[0, :, :] > mean_hillshade,
+        hillshade[0, :, :] - mean_hillshade + multiscale_hillshade,
+        multiscale_hillshade,
+    )
+    multiscale_hillshade = (
+        255.0
+        * (highlight - np.min(highlight))
+        / (np.max(highlight) - np.min(highlight))
+    )
     # save2_hillshade = multiscale_hillshade.copy()
 
-    # 2) in the demo above it goes from black (steepest) to transparent black (shallowest)
-    # with the slopes, need to invert values (want steepest areas to be darkest)
-    # then average them together - the directionless gives a fake ambient
-    # occlusion effect
-    logger.info('Applying multiple scale steepness shading to multiple scale hillshade')
+    # 2) in the demo above it goes from black (steepest) to transparent black
+    # (shallowest) with the slopes, need to invert values (want steepest areas
+    # to be darkest) then average them together - the directionless gives a fake
+    # ambient occlusion effect
+    logger.info("Applying multiple scale steepness shading to multiple scale hillshade")
     slope_average = np.sum(steepness, axis=0) / len(steepness)
     stp_bad_mask_arr = np.ones(multiscale_hillshade.shape)
-    stp_bad_mask_arr[dl_badmask] = 0.
+    stp_bad_mask_arr[dl_badmask] = 0.0
     for sidx in range(len(steepness)):
-        bad = np.where(steepness[sidx, :, :] == working_meta['nodata'])
-        stp_bad_mask_arr[bad] = 0.
+        bad = np.where(steepness[sidx, :, :] == working_meta["nodata"])
+        stp_bad_mask_arr[bad] = 0.0
 
     stp_good_mask = np.where(stp_bad_mask_arr == 1)
     stp_bad_mask = np.where(stp_bad_mask_arr == 0)
-    weighted_slope_average = \
-        255. * slope_average / np.max(slope_average[stp_good_mask])
-    multiscale_hillshade[stp_good_mask] = \
+    weighted_slope_average = (
+        255.0 * slope_average / np.max(slope_average[stp_good_mask])
+    )
+    multiscale_hillshade[stp_good_mask] = (
         multiscale_hillshade[stp_good_mask] - weighted_slope_average[stp_good_mask]
-    multiscale_hillshade = 255. * (multiscale_hillshade - np.min(multiscale_hillshade)) \
-                           / (np.max(multiscale_hillshade) - np.min(multiscale_hillshade))
+    )
+    multiscale_hillshade = (
+        255.0
+        * (multiscale_hillshade - np.min(multiscale_hillshade))
+        / (np.max(multiscale_hillshade) - np.min(multiscale_hillshade))
+    )
     # save3_hillshade = multiscale_hillshade.copy()
 
     # 3) now take hillshade of the _slope_ at all resolutions.
     # so to do this we need to treat slope as a DEM and loop to create fake
     # fake slope aspect and fake slope steepness
     # N.B. only want the high end and low end to accent our final hillshade
-    logger.info('Making meta-hillshade from slope steepness at multiple scales')
+    logger.info("Making meta-hillshade from slope steepness at multiple scales")
     meta_slope_shade = []
-    temp_slope_hillshade_uri = working_dir + os.sep + 'tempmetahillshade.tif'
+    temp_slope_hillshade_uri = working_dir + os.sep + "tempmetahillshade.tif"
     meta_bad_mask_arr = np.ones(multiscale_hillshade.shape)
-    meta_bad_mask_arr[dl_badmask] = 0.
+    meta_bad_mask_arr[dl_badmask] = 0.0
     for sidx in steepness_uri.keys():
         meta_dem_uri = steepness_uri[sidx]
         # I don't want to save all these items so just have them overwrite
-        logger.info('\t\tMaking meta-hillshade at %d pixel blur radius' % sidx)
-        get_basic_hillshade(temp_slope_hillshade_uri, meta_dem_uri,
-                            altitude_deg=altitude_deg, azimuth_deg=azimuth_deg,
-                            overwrite_temp_files=True)
-        with rasterio.open(temp_slope_hillshade_uri, 'r') as tempslopeshade:
+        logger.info("\t\tMaking meta-hillshade at %d pixel blur radius" % sidx)
+        get_basic_hillshade(
+            temp_slope_hillshade_uri,
+            meta_dem_uri,
+            altitude_deg=altitude_deg,
+            azimuth_deg=azimuth_deg,
+            overwrite_temp_files=True,
+        )
+        with rasterio.open(temp_slope_hillshade_uri, "r") as tempslopeshade:
             meta_slope_shade.append(tempslopeshade.read(1))
-        meta_bad_mask_arr = np.where(meta_slope_shade[-1] == working_meta['nodata'],
-                                     0., meta_bad_mask_arr)
-    logger.info('\tAveraging meta-hillshade from slope steepness')
+        meta_bad_mask_arr = np.where(
+            meta_slope_shade[-1] == working_meta["nodata"], 0.0, meta_bad_mask_arr
+        )
+    logger.info("\tAveraging meta-hillshade from slope steepness")
     meta_slope_shade = np.array(meta_slope_shade)
-    average_slope_shade = \
-        np.sum(meta_slope_shade, axis=0) / len(meta_slope_shade)
+    average_slope_shade = np.sum(meta_slope_shade, axis=0) / len(meta_slope_shade)
     # rescale the slope shade to 255.
     avsl_good_mask = np.where(meta_bad_mask_arr == 1)
     avsl_badmask = np.where(meta_bad_mask_arr == 0)
-    average_slope_shade = 255. * \
-        (average_slope_shade - np.min(average_slope_shade[avsl_good_mask])) \
-        / (np.max(average_slope_shade[avsl_good_mask]) - np.min(average_slope_shade[avsl_good_mask]))
+    average_slope_shade = (
+        255.0
+        * (average_slope_shade - np.min(average_slope_shade[avsl_good_mask]))
+        / (
+            np.max(average_slope_shade[avsl_good_mask])
+            - np.min(average_slope_shade[avsl_good_mask])
+        )
+    )
     # at this point, I want to block out the original nodata values to figure out
     # the bright ends (additive) and dark ends (subtractive)
-    logger.info('\tDetermining bright and dark ends of meta-hillshade')
-    midpoint_slope_shade = (np.min(average_slope_shade[avsl_good_mask]) +
-                            np.max(average_slope_shade[avsl_good_mask]))/2
-    upper_quartile_slope_shade = (np.max(average_slope_shade[avsl_good_mask])
-                                  + midpoint_slope_shade)/2
-    lower_quartile_slope_shade = (np.min(average_slope_shade[avsl_good_mask])
-                                  + midpoint_slope_shade)/2
-    bright_slope_shade = \
-        np.where(average_slope_shade >= upper_quartile_slope_shade,
-                 average_slope_shade - upper_quartile_slope_shade, 0.)
-    dark_slope_shade = \
-        np.where(average_slope_shade <= lower_quartile_slope_shade,
-                 average_slope_shade - lower_quartile_slope_shade, 0.)
-    logger.info('\tApplying bright and dark ends of meta-hillshade to'
-                + ' multiscale hillshade')
+    logger.info("\tDetermining bright and dark ends of meta-hillshade")
+    midpoint_slope_shade = (
+        np.min(average_slope_shade[avsl_good_mask])
+        + np.max(average_slope_shade[avsl_good_mask])
+    ) / 2
+    upper_quartile_slope_shade = (
+        np.max(average_slope_shade[avsl_good_mask]) + midpoint_slope_shade
+    ) / 2
+    lower_quartile_slope_shade = (
+        np.min(average_slope_shade[avsl_good_mask]) + midpoint_slope_shade
+    ) / 2
+    bright_slope_shade = np.where(
+        average_slope_shade >= upper_quartile_slope_shade,
+        average_slope_shade - upper_quartile_slope_shade,
+        0.0,
+    )
+    dark_slope_shade = np.where(
+        average_slope_shade <= lower_quartile_slope_shade,
+        average_slope_shade - lower_quartile_slope_shade,
+        0.0,
+    )
+    logger.info(
+        "\tApplying bright and dark ends of meta-hillshade to" + " multiscale hillshade"
+    )
     multiscale_hillshade[avsl_good_mask] += bright_slope_shade[avsl_good_mask]
     multiscale_hillshade[avsl_good_mask] -= dark_slope_shade[avsl_good_mask]
     # save4_hillshade = multiscale_hillshade.copy()
@@ -676,18 +756,25 @@ def calculate_multiscale_hillshade(output_mshillshade_uri, downloaded_dem_uri,
     # 4) penultimately, with original DEM, take the lower 50% of elevated areas and
     # proportionally darken to lower elevation
     dark_factor = 0.66  # up/down to make this more/less dramatic
-    logger.info('\tDarkening lower elevation areas by %.2f' % dark_factor)
-    threshold_elevation = (np.max(working_dem[dl_goodmask])
-                     + np.min(working_dem[dl_goodmask])) / 3
-    height_darken = np.where(working_dem <= threshold_elevation,
-                             threshold_elevation - working_dem, 0.)
-    height_darken = dark_factor * \
-        255. * (height_darken - np.min(height_darken[dl_goodmask])) \
+    logger.info(f"\tDarkening lower elevation areas by {dark_factor:.2f}")
+    threshold_elevation = (
+        np.max(working_dem[dl_goodmask]) + np.min(working_dem[dl_goodmask])
+    ) / 3
+    height_darken = np.where(
+        working_dem <= threshold_elevation, threshold_elevation - working_dem, 0.0
+    )
+    height_darken = (
+        dark_factor
+        * 255.0
+        * (height_darken - np.min(height_darken[dl_goodmask]))
         / (np.max(height_darken[dl_goodmask]) - np.min(height_darken[dl_goodmask]))
+    )
     multiscale_hillshade[dl_goodmask] -= height_darken[dl_goodmask]
-    multiscale_hillshade = \
-        255. * (multiscale_hillshade - np.min(multiscale_hillshade)) \
+    multiscale_hillshade = (
+        255.0
+        * (multiscale_hillshade - np.min(multiscale_hillshade))
         / (np.max(multiscale_hillshade) - np.min(multiscale_hillshade))
+    )
     # save5_hillshade = multiscale_hillshade.copy()
 
     # 5) and finally, we would like to excise non-land pixels from the hillshade
@@ -697,15 +784,15 @@ def calculate_multiscale_hillshade(output_mshillshade_uri, downloaded_dem_uri,
     # original dem and find other zeros that are contiguous. Then combine with
     # other masks and set to nodata.
     # sea mask if sea = 1, and if land = 0
-    sea_mask_primed = np.where(base_dem[-1, :, :] == 0., 1, 0)
+    sea_mask_primed = np.where(base_dem[-1, :, :] == 0.0, 1, 0)
     n_primed = len(np.where(sea_mask_primed == 1)[0])
-    sea_mask_to_test = np.where(base_dem[0, :, :] == 0., 1, 0)
+    sea_mask_to_test = np.where(base_dem[0, :, :] == 0.0, 1, 0)
     sea_labeled = label(sea_mask_to_test, background=0)
 
     # before getting started, can already blank out no data areas as non-land
     sea_mask = np.zeros(sea_mask_to_test.shape)
     sea_mask[avsl_badmask] = 1
-    sea_mask[dl_badmask]= 1
+    sea_mask[dl_badmask] = 1
     sea_mask[stp_bad_mask] = 1
     indexes = list(set(list(sea_labeled.ravel())))
     iidx = 0
@@ -728,18 +815,18 @@ def calculate_multiscale_hillshade(output_mshillshade_uri, downloaded_dem_uri,
     ###########################################################################
     # 6) save
     out_meta = working_meta.copy()
-    out_meta.update(dtype='int16')
-    out_meta.update(compress='lzw')
-    multiscale_hillshade[np.where(sea_mask == 1)] = out_meta['nodata']
+    out_meta.update(dtype="int16")
+    out_meta.update(compress="lzw")
+    multiscale_hillshade[np.where(sea_mask == 1)] = out_meta["nodata"]
 
-    with rasterio.open(output_mshillshade_uri, 'w', **out_meta) as outmshade:
-        outmshade.write_band(1, multiscale_hillshade.astype(out_meta['dtype']))
+    with rasterio.open(output_mshillshade_uri, "w", **out_meta) as outmshade:
+        outmshade.write_band(1, multiscale_hillshade.astype(out_meta["dtype"]))
 
-    logger.info('Multiscale hillshade saved to %s' % output_mshillshade_uri)
+    logger.info(f"Multiscale hillshade saved to {output_mshillshade_uri}")
 
     # 7) tidy up if asked
     if delete_temp_files:
-        logger.warning('Deleting temporary files')
+        logger.warning("Deleting temporary files")
         for rt, dr, fls in os.walk(working_dir):
             for fl in fls:
                 fl_uri = os.path.join(rt, fl)
