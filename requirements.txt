@@ -1,0 +1,7 @@
+numpy==1.19.5
+geopandas==0.8.2
+rasterio==1.2.0
+affine==2.3.0
+scikit-image==0.18.1
+osgeo==0.0.0
+gdal==3.0.4
